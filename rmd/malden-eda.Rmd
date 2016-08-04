@@ -1,0 +1,121 @@
+---
+title: 'Malden River: Exploratory Water Quality Data Analysis'
+author: "Jeffrey D. Walker, PhD"
+date: "August 3, 2016"
+output: html_document
+---
+
+```{r libraries, echo = FALSE, message = FALSE}
+library(yaml)
+library(myrwaR)
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(readr)
+library(knitr)
+library(ggplot2)
+
+theme_set(theme_bw())
+theme_update(strip.background = element_blank(),
+             strip.text = element_text(face = "bold"))
+
+opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+```
+
+```{r load-data}
+wq_list <- readRDS("../data/rdata/wq_malden.rda")
+
+wq <- wq_list$data %>%
+  filter(year(Datetime) <= 2015)
+stn <- wq_list$stn
+
+stn <- stn %>%
+  mutate(Organization = plyr::revalue(LocationID, c("MAR003"="MyRWA", "MAR036"="MyRWA", "MWRA176"="MWRA")))
+
+characteristic_levels <- c("DEPTH", "DO", "DO_SAT", "PH", "SALINITY", "SPCOND", "TEMP_WATER", "SECCHI", "TURB", "TSS", "NO23", "NH3", "NO2", "NO3", "TN", "PO4", "TP", "CHLA", "ECOLI", "FCOLI", "ENT")
+
+wq <- wq %>%
+  mutate(CharacteristicID = ordered(CharacteristicID, levels = characteristic_levels))
+
+# outlier
+idx <- which(wq$CharacteristicID == "TP" & wq$LocationID == "MAR036" & wq$ResultValue > 1)
+wq <- wq[-idx, ]
+```
+
+# Monitoring Stations
+
+```{r}
+stn %>%
+  select(Organization, LocationID, LocationDescription, Latitude, Longitude) %>%
+  kable(col.names = c("Organization", "Location ID", "Description", "Latitude", "Longitude"))
+```
+
+[Map]
+
+# Parameters
+
+```{r plot-stn-char, fig.width=8, fig.height=10}
+wq %>%
+  mutate(Year = year(Datetime),
+         CharacteristicID = ordered(CharacteristicID, levels = rev(levels(CharacteristicID)))) %>%
+  select(Year, LocationID, CharacteristicID) %>%
+  distinct %>%
+  ggplot(aes(factor(Year), CharacteristicID)) +
+  geom_tile() +
+  facet_wrap(~LocationID, ncol = 1) +
+  labs(x = "Year", y = "")
+```
+
+```{r}
+wq %>%
+  filter(CharacteristicID %in% c("TP"),
+         ProjectID == "BASE") %>%
+  ggplot(aes(Datetime, ResultValue)) +
+  geom_point() +
+  facet_wrap( ~ LocationID, ncol = 1)
+```
+
+```{r}
+wq %>%
+  filter(CharacteristicID %in% c("TP"),
+         ProjectID == "BASE") %>%
+  ggplot(aes(Datetime, ResultValue)) +
+  geom_point() +
+  facet_wrap( ~ LocationID, ncol = 1) +
+  scale_y_log10()
+```
+
+
+
+```{r}
+wq %>%
+  filter(CharacteristicID %in% c("TP", "CHLA")) %>%
+  filter(year(Datetime) == 2015) %>%
+  ggplot(aes(Datetime, ResultValue)) +
+  geom_point() +
+  facet_grid(CharacteristicID ~ LocationID, scales = "free_y")
+```
+
+
+```{r}
+wq %>%
+  filter(CharacteristicID %in% c("TP"),
+         ProjectID == "BASE",
+         ResultValue > 0.01) %>%
+  mutate(DecimalDate = decimal_date(as.Date(Datetime)),
+         DecimalDate2000 = DecimalDate - 2000) %>%
+  lm(ResultValue ~ DecimalDate2000, data = .) %>%
+  summary
+```
+
+
+```{r}
+wq %>%
+  filter(CharacteristicID %in% c("TP"),
+         ProjectID == "BASE",
+         ResultValue > 0.01) %>%
+  mutate(Jday = yday(Datetime)) %>%
+  ggplot(aes(Jday, ResultValue)) +
+  geom_point()
+```
+

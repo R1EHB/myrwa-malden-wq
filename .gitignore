@@ -7,3 +7,4 @@ packrat/src/
 *.rda
 rmd/*.R
 rmd/*.html
+data/gis/*.*

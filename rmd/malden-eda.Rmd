@@ -1,8 +1,19 @@
 ---
 title: 'Malden River: Exploratory Water Quality Data Analysis'
-author: "Jeffrey D. Walker, PhD"
-date: "August 3, 2016"
-output: html_document
+author: "Jeffrey D. Walker PhD, Walker Environmental Research LLC"
+date: "August 5, 2016"
+output:
+  pdf_document:
+    number_sections: yes
+    toc: yes
+    toc_depth: 2
+    keep_tex: yes
+    includes:
+      in_header: header.tex
+  html_document:
+    number_sections: yes
+    toc: yes
+    toc_depth: 2
 ---
 
 ```{r libraries, echo = FALSE, message = FALSE}
@@ -14,6 +25,7 @@ library(lubridate)
 library(readr)
 library(knitr)
 library(ggplot2)
+library(ggmap)
 
 theme_set(theme_bw())
 theme_update(strip.background = element_blank(),
@@ -29,93 +41,633 @@ wq <- wq_list$data %>%
   filter(year(Datetime) <= 2015)
 stn <- wq_list$stn
 
+project_names <- c("BASE"="Baseline", "TMDL"="TMDL", "CSORWM"="CSORWM")
+
+stn_projects <- wq %>%
+  mutate(ProjectName = plyr::revalue(ProjectID, project_names)) %>%
+  select(ProjectName, LocationID) %>%
+  distinct %>%
+  group_by(LocationID) %>%
+  summarise(Projects = paste(ProjectName, collapse=", "))
+
 stn <- stn %>%
+  left_join(stn_projects, by = "LocationID") %>%
   mutate(Organization = plyr::revalue(LocationID, c("MAR003"="MyRWA", "MAR036"="MyRWA", "MWRA176"="MWRA")))
+
+wq <- wq %>%
+  mutate(ProjectName = plyr::revalue(ProjectID, project_names))
 
 characteristic_levels <- c("DEPTH", "DO", "DO_SAT", "PH", "SALINITY", "SPCOND", "TEMP_WATER", "SECCHI", "TURB", "TSS", "NO23", "NH3", "NO2", "NO3", "TN", "PO4", "TP", "CHLA", "ECOLI", "FCOLI", "ENT")
 
 wq <- wq %>%
   mutate(CharacteristicID = ordered(CharacteristicID, levels = characteristic_levels))
 
-# outlier
+characteristic_labels <- c("DEPTH" = "Depth",
+                           "DO" = "DO",
+                           "DO_SAT" = "DO Saturation",
+                           "PH" = "pH",
+                           "SALINITY" = "Salinity",
+                           "SPCOND" = "Sp. Cond.",
+                           "TEMP_WATER" = "Temperature",
+                           "SECCHI" = "Secchi Depth",
+                           "TURB" = "Turbidity",
+                           "TSS" = "TSS",
+                           "NO23" = "Nitrite+Nitrate",
+                           "NH3" = "Ammonia",
+                           "NO2" = "Nitrite",
+                           "NO3" = "Nitrate",
+                           "TN" = "Total Nitrogen",
+                           "PO4" = "Phosphate",
+                           "TP" = "Total Phosphorus",
+                           "CHLA" = "Chlorophyll a",
+                           "ECOLI" = "E. coli",
+                           "FCOLI" = "Fecal Coliform",
+                           "ENT" = "Enterococcus")
+wq <- wq %>%
+  mutate(CharacteristicLabel = plyr::revalue(CharacteristicID, characteristic_labels))
+ 
+# merge characteristic name and units
+wq <- wq %>%
+  mutate(CharacteristicUnits = paste0(CharacteristicLabel, " (", Units, ")")) %>%
+  arrange(CharacteristicID, Units) %>%
+  mutate(CharacteristicLabel = ordered(CharacteristicLabel, levels = unique(CharacteristicLabel)),
+         CharacteristicUnits = ordered(CharacteristicUnits, levels = unique(CharacteristicUnits)))
+
+characteristics <- wq %>%
+  select(CharacteristicID, Units, CharacteristicLabel, CharacteristicUnits) %>%
+  distinct
+
+# add sample depth type to MyRWA data
+wq <- wq %>%
+  mutate(SampleDepthType = ifelse(ProjectID == "CSORWM", SampleDepthType, "S"),
+         SampleDepthName = plyr::revalue(SampleDepthType, c("S"="Surface", "B"="Bottom")))
+
+# outliers
 idx <- which(wq$CharacteristicID == "TP" & wq$LocationID == "MAR036" & wq$ResultValue > 1)
 wq <- wq[-idx, ]
+
+idx <- which(wq$CharacteristicID == "TP" & wq$LocationID == "MAR036" & wq$ResultValue < 0.020)
+wq <- wq[-idx, ]
+
+idx <- which(wq$CharacteristicID == "DO_SAT" & wq$LocationID == "MWRA176" & wq$ResultValue > 600)
+wq <- wq[-idx, ]
+
+# gis
+gis <- readRDS("../data/rdata/gis.rda")
 ```
+
+# Introduction
+
+The Malden River watershed is a highly urbanized and densely populated area located near the coast of Massachusetts and just north of the city of Boston (Figure \ref{fig-stn-map}). The main channel of the Malden River is about 2.5 miles long and flows through the city of Malden and then along the border between the cities of Medford and Everett. The upper portion of the watershed is less densely populated and includes land within the city of Melrose and towns of Stoneham and Wakefield. The Malden River is a major tributary to the Mystic River, and ultimately flows into the Mystic's lower basin just upstream of the Amelia Earhart Dam between Somerville and Everett before flowing out to Boston Harbor. There is currently no public access to the Malden River due to a history of industrial development and concerns about the risks of sediment and current water quality contamination to public health.
+
+```{r fig-stn-map, fig.width=8, fig.height=8, fig.cap="Map of Monitoring Locations in the Malden River Watershed \\label{fig-stn-map}"}
+ggmap(gis[["map"]], extent = "device", darken = c(0.5, "white")) +
+  geom_polygon(data = gis[["layers"]][["malden_towns"]],
+               aes(x = long, y = lat, group = group, linetype = "Towns"),
+               fill = NA, color = "black") +
+  geom_polygon(data = gis[["layers"]][["malden_basin"]],
+               aes(x = long, y = lat, group = group, linetype = "Basin"),
+               fill = NA, color = "black") +
+  geom_path(data = gis[["layers"]][['malden_hydronet_arc']], aes(x = long, y = lat, group = group),
+            color = "deepskyblue") +
+  geom_polygon(data = gis[["layers"]][["malden_hydro25k_poly"]], aes(x = long, y = lat, group = group),
+               fill = "deepskyblue", color = "steelblue") +
+  geom_point(data = stn, aes(x = Longitude, y = Latitude, shape = Organization), color = "red", size = 3) +
+  geom_label(data = stn, aes(x = Longitude, y = Latitude, label = LocationID), color = "red", size = 3,
+             hjust = 0, nudge_x = 0.005) +
+  scale_linetype_manual("", values = c("Basin" = 1, "Towns" = 3)) +
+  scale_shape_discrete("Sampling\nOrganization")
+```
+
+The Mystic River Watershed Association (MyRWA) has been collecting routine monthly water quality samples along the Malden River beginning in the year 2000. MyRWA has also collected a significant number of grab samples targeting stormwater outfalls and other locations suspected of high pollutant discharges as part of their Hotspot Monitoring Program. The Massachusetts Water Resources Authority (MWRA) has also collected routine biweekly sampling data on the Malden River since 2002 as part of their CSO Receiving Water Monitoring Program.
+
+This document provides a exploratory analysis of water quality data collected by both MyRWA and the MWRA on the Malden River from 2000 through 2015. The goals of this analysis are to 1) summarize existing water quality data, 2) determine the frequency and magnitude of water quality impairments on the river, and 3) determine whether water quality conditions have changed over time.
+
+This analysis focuses primarily on two long-term datasets (MyRWA Baseline and MWRA CSORWM Programs), as well as data collected in 2015 as part of MyRWA's new TMDL Sampling Program. Although more data are available from individual municipalities and the MyRWA Hotspot Sampling Program, those datasets were excluded from this analysis because they include single grab samples at many individual locations but do not follow regular sampling frequencies. Therefore, those datasets require different kinds of analyses focusing on evaluating the spatial variability of water quality conditions, which is beyond the scope of this analysis.
 
 # Monitoring Stations
 
-```{r}
+Table \ref{tbl-stn} lists the names and coordinates of the three routine sampling stations on the Malden River that are included in this analysis. Two of these stations (`MAR003` and `MAR036`) are sampled by MyRWA, while the third station (`MWRA176`) is sampled by MWRA. Figure 1 shows the locations of these stations as well as the basin  boundary and hydrographic features (streams and ponds) of the Malden River watershed. All three monitoring stations are located within the main channel of the Malden River, which is a relatively flat and slow-moving reach that is impounded by the Amelia Earhart Dam just below its confluence with the Mystic River. Upstream of the main channel, the Malden River flows underground beneath the city of Malden making sampling in reaches upstream of the main channel very difficult, if not impossible. 
+
+The `MAR036` station is the northern-most station located at the Medford St. bridge near the top of the main channel. The `MWRA176` station is located just upstream of the Rt 16 bridge between the two MyRWA stations. And finally, the `MAR003` station is located below the Rt 16 bridge near the confluence of the Mystic and Malden Rivers.
+
+```{r tbl-stn}
 stn %>%
-  select(Organization, LocationID, LocationDescription, Latitude, Longitude) %>%
-  kable(col.names = c("Organization", "Location ID", "Description", "Latitude", "Longitude"))
+  select(LocationID, Organization, Projects, Latitude, Longitude) %>%
+  kable(col.names = c("Location ID", "Organization", "Projects", "Latitude", "Longitude"),
+        caption = "Monitoring Stations \\label{tbl-stn}")
 ```
 
-[Map]
+# Water Quality Monitoring Programs
 
-# Parameters
+This analysis uses data collected as part of three separate sampling programs, each of which  includes measurements of different sets of water quality parameters and at different sampling frequencies. The parameters that were measured has also varied over the course of each sampling program. This section describes the purpose of each sampling program and identifies which parameters were measured at each station.
 
-```{r plot-stn-char, fig.width=8, fig.height=10}
+## MyRWA Baseline Water Quality Program
+
+Beginning in the year 2000, MyRWA and its volunteers have collected monthly water quality samples at multiple locations across the Mystic River watershed through its Baseline Sampling Program. This program includes one station on the Malden River: `MAR036`. Figure \ref{fig-characteristic-base} shows the years for which each parameter was measured at `MAR036`. The parameters that have been consistently measured over the entire program include dissolved oxygen concentration and percent saturation, specific conductivity, water temperature, total suspended solids, nitrite+nitrate, total phosphorus and E. coli. Other parameters including various nitrogen species and fecal coliform were collected only in the first couple years. Two additional parameters were added in the later years of the program and include turbidity in 2014 and ammonia in 2012. 
+
+```{r fig-characteristic-base, fig.width=8, fig.height=4, fig.cap="Water Quality Parameters Measured at MAR036 for the MyRWA Baseline Sampling Program by Year \\label{fig-characteristic-base}"}
 wq %>%
+  filter(ProjectID == "BASE") %>%
   mutate(Year = year(Datetime),
-         CharacteristicID = ordered(CharacteristicID, levels = rev(levels(CharacteristicID)))) %>%
-  select(Year, LocationID, CharacteristicID) %>%
+         CharacteristicLabel = ordered(CharacteristicLabel, levels = rev(levels(CharacteristicLabel)))) %>%
+  select(Year, LocationID, CharacteristicLabel) %>%
   distinct %>%
-  ggplot(aes(factor(Year), CharacteristicID)) +
+  ggplot(aes(factor(Year), CharacteristicLabel)) +
   geom_tile() +
   facet_wrap(~LocationID, ncol = 1) +
   labs(x = "Year", y = "")
 ```
 
-```{r}
+## MyRWA TMDL Sampling Program
+
+The MyRWA TMDL Sampling Program began in 2015 as part of an effort to better understand nutrient loading and in-stream dynamics related to eutrophication. This program includes samples collected at both the baseline station (`MAR036`) as well as a new station: `MAR003`. Figure \ref{fig-characteristic-tmdl} shows which parameters were measured at each site in 2015. Field parameters including dissolved oxygen, specific conductivity, water temperature and turbidity are collected at both stations, as well as total phosphorus. Additionally, chlorophyll a is measured only at the `MAR003` station.
+
+```{r fig-characteristic-tmdl, fig.width=8, fig.height=4, fig.cap="Water Quality Parameters Measured for the MyRWA TMDL Sampling Program by Year \\label{fig-characteristic-tmdl}"}
 wq %>%
-  filter(CharacteristicID %in% c("TP"),
-         ProjectID == "BASE") %>%
+  filter(ProjectID == "TMDL") %>%
+  mutate(Year = year(Datetime),
+         CharacteristicLabel = ordered(CharacteristicLabel, levels = rev(levels(CharacteristicLabel)))) %>%
+  select(Year, LocationID, CharacteristicLabel) %>%
+  distinct %>%
+  ggplot(aes(factor(Year, levels = 2000:2015), CharacteristicLabel)) +
+  geom_tile() +
+  facet_wrap(~LocationID, ncol = 1) +
+  scale_x_discrete(drop = FALSE) +
+  labs(x = "Year", y = "")
+```
+
+## MWRA CSO Receiving Water Monitoring Program
+
+The MWRA CSO Receiving Water Monitoring Program (`CSORWM`) is a biweekly sampling program that began in 2002 and includes one station on the Malden River: `MWRA176`. Every two weeks, the MWRA collects samples on two consecutive days, presumably to evaluate the day-to-day persistence of indicator bacteria levels. On each site visit, field measurements and samples are collected both near the surface and near the bottom of the water column. Sampling primarily targets the recreational season and thus includes data collected between May and November of each year. Figure \ref{fig-characteristic-csorwm} shows the parameters measured at this station in each year. This program includes long-term records of multiple field parameters, as well as indicator bacteria measured as both E. coli and enteroccocus. Fecal coliform levels were also measured in the first three years, but discontinued in 2005.
+
+```{r fig-characteristic-csorwm, fig.width=8, fig.height=3, fig.cap="Water Quality Parameters Measured for the MRWA CSO Receiving Water Monitoring Program by Year \\label{fig-characteristic-csorwm}"}
+wq %>%
+  filter(ProjectID == "CSORWM") %>%
+  mutate(Year = year(Datetime),
+         CharacteristicLabel = ordered(CharacteristicLabel, levels = rev(levels(CharacteristicLabel)))) %>%
+  select(Year, LocationID, CharacteristicLabel) %>%
+  distinct %>%
+  ggplot(aes(factor(Year, levels = 2000:2015), CharacteristicLabel)) +
+  geom_tile() +
+  facet_wrap(~LocationID, ncol = 1) +
+  scale_x_discrete(drop = FALSE) +
+  labs(x = "Year", y = "")
+```
+
+# Long-term Water Quality Data Analysis
+
+This section focuses on the two long-term water quality datasets collected through the MyRWA Baseline Water Quality Monitoring Program and MWRA CSO Receiving Water Monitoring Program. This section does not include data from the MyRWA TMDL Sampling Program, which only consists of one year of data (2015) and will be discussed in the Section 5. 
+
+Note that for many parameters, MWRA collects two sets of samples on each site visit - one near the surface of the water column and one near the bottom. MyRWA, on the other hand, only collects a single measurement near the water surface. The plots below distinguishes between these two depths when appropriate.
+
+```{r wq-long}
+wq_lt <- filter(wq, ProjectID %in% c("BASE", "CSORWM"))
+```
+
+```{r wq-std}
+wq_std <- c("DO" = 5, 
+            "DO_SAT" = 100,
+            "TEMP_WATER" = 28.3,
+            "PH" = 6.5,
+            "PH" = 8.3,
+            "TP" = 0.025,
+            "ECOLI" = 235)
+wq_std <- data.frame(CharacteristicID = names(wq_std),
+                     StdValue = unname(wq_std)) %>%
+  left_join(characteristics, by = "CharacteristicID")
+```
+
+## Dissolved Oxygen
+
+Dissolved oxygen (DO) is an important water quality parameter that determines the ability of a water body to support aquatic life. Low DO levels can be caused by the decay of excessive algae growth as well as high biological, chemical, and sediment oxygen demand that remove oxygen from the water column. When DO levels are very low, important aquatic species, especially fish, undergo significant stress and can ultimately perish, an event known as fish kills. The Massachusetts water quality standard for warm water fisheries, which is the designation for the Malden River, requires a minimum DO level of 5 mg/L at all times in order to support aquatic life.
+
+Dissolved oxygen has been continuously measured at both long-term stations as both concentration and percent of saturation. As a dissolved gas, the concentration of DO is regulated in part by diffusion of oxygen from the atmosphere into the water column, which is dependent on temperature. As the water temperature increases, the saturation capacity of the water decreases meaning it can hold less oxygen relative to the constant concentration in the air. The measurement of dissolved oxygen as a percent of saturation accounts for this effect, and thus expresses oxygen levels relative to the equilibrium concentration. When the water is in equilibrium with the air, the percent saturation is equal to 100%. When DO saturation exceeds 100% then the water is super-saturated, and when less than 100% it is under-saturated.
+
+Figure \ref{fig-do-ts} shows a timeseries of DO concentration and saturation at each station over time. The horizontal reference line in the upper panels indicate the minimum water quality standard of 5 mg/L, while the line in the bottom panels indicates equilibrium saturation of 100%. The other lines are LOESS smooth lines used to show general patterns in the data.
+
+At MyRWA's `MAR036` station, the majority of measurements are above the minimum standard of 5 mg/L, however, both concentration and percent saturation show a downward trend since 2005 suggesting conditions are becoming more impaired.
+
+At the MWRA station `MWRA176`, the surface measurements do not show any trend and are mostly above the state standard. The measurements collected near the bottom of the water column, however, are primarily below the standard indicating a significant impairment. These low DO levels are likely due to high sediment oxygen demand, which consumes oxygen from the water column as the result of biological and/or chemical processes in the sediment. 
+
+The percent saturation at `MWRA176` also indicates frequent super-saturated conditions in each year with saturation reaching levels as high as 150%. 
+
+```{r fig-do-ts, fig.width = 10, fig.height = 6, fig.cap="Dissolved Oxygen Concentrations and Saturation Levels by Station and Sample Depth Over Time \\label{fig-do-ts}"}
+wq_lt %>%
+  filter(CharacteristicID %in% c("DO", "DO_SAT")) %>%
+  ggplot(aes(Datetime, ResultValue, color = SampleDepthName)) +
+  geom_hline(data = filter(wq_std, CharacteristicID %in% c("DO", "DO_SAT")),
+             aes(yintercept = StdValue, linetype = "WQ Standard"),
+             color = "gray50", linetype = 2) +
+  geom_point(size = 1) +
+  geom_smooth(aes(color = SampleDepthName), se = FALSE, size = 0.5) +
+  facet_grid(CharacteristicUnits ~ LocationID, scales = "free_y", switch = "y") +
+  scale_x_datetime(breaks = scales::pretty_breaks(n = 10)) +
+  labs(x = "Date", y = "") +
+  scale_color_manual("Sample Depth", values = c("Bottom" = "orangered", "Surface" = "deepskyblue"))
+```
+
+Figure \ref{fig-do-jday} shows the DO concentration and percent saturation by day of each year. This type of plot is commonly used to identify seasonal patterns in water quality data. The DO concentrations show strong seasonality with the highest concentrations in winter and lowest in summer, which is often observed in temperate aquatic systems. This pattern primarily reflects the change in DO saturation level with changes in temperature over the course of the year.
+
+The DO percent saturation at `MAR036` shows some seasonal patterns with a greater range of values observed during the summer months (June - September) than in winter or fall. Super-saturated conditions, as indicated by DO saturation above 100%, occasionally occur in late spring and late summer, and may indicate excessive primary production due to the growth of algae or submerged aquatic vegetation which produce oxygen. 
+
+At the MWRA station `MWRA176`, surface DO saturation frequently exceeded 100%, especially in the early summer (May) and late summer (August and September). Because this station is located farther downstream from the MyRWA station, these results may indicate significant algae growth occuring between the two stations. The bottom measurements also show significant seasonality with very low concentrations (< 2 mg/L) most frequent in July and August. 
+
+Overall, these patterns in DO levels suggest that oxygen levels are frequently impaired near the bottom of the water column, likely due to high sediment oxygen demand. Near the surface, super-saturation occurs throughout the summer and indicates high rates of  primary production.  
+
+```{r fig-do-jday, fig.width = 10, fig.height = 6, fig.cap="Dissolved Oxygen Levels and Saturation Levels by Station and Sample Depth over Day of the Year \\label{fig-do-jday}"}
+wq_lt %>%
+  mutate(Jday = yday(Datetime),
+         JdayDate = as.Date("2001-01-01") + days(Jday - 1)) %>%
+  filter(CharacteristicID %in% c("DO", "DO_SAT")) %>%
+  ggplot(aes(JdayDate, ResultValue, color = SampleDepthName)) +
+  geom_hline(data = filter(wq_std, CharacteristicID %in% c("DO", "DO_SAT")),
+             aes(yintercept = StdValue, linetype = "WQ Standard"),
+             color = "gray50", linetype = 2) +
+  geom_point(size = 1) +
+  geom_smooth(aes(color = SampleDepthName), se = FALSE, size = 0.5) +
+  facet_grid(CharacteristicUnits ~ LocationID, scales = "free_y", switch = "y") +
+  scale_x_date(labels = scales::date_format("%b %d"),
+               breaks = scales::date_breaks("1 month")) +
+  labs(x = "Day of Year", y = "") +
+  scale_color_manual("Sample Depth", values = c("Bottom" = "orangered", "Surface" = "deepskyblue")) +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+```
+
+## Temperature
+
+Temperature is another common water quality parameter measured in the field that is important for supporting certain fish species that can become stressed under extreme conditions. Temperature is also a major controlling factor that affects the rates of biological activity and chemical processes. The Massachusetts water quality standard for warm water fisheries sets a maximum temperature of 28.3 deg C (83 deg F) year-round. 
+
+Figure \ref{fig-temp-ts} shows temperatures measured at each long term station over time. The horizontal line indicates the state standard of 28.3 deg C. With only a couple exceptions, the temperature measurements at both stations do not exceed the state standard. The temperature data also do not show any general trend over time.
+
+```{r fig-temp-ts, fig.width = 10, fig.height = 4, fig.cap="Water Temperatures Measured by Station and Sample Depth over Time \\label{fig-temp-ts}"}
+wq_lt %>%
+  filter(CharacteristicID %in% c("TEMP_WATER")) %>%
+  ggplot(aes(Datetime, ResultValue, color = SampleDepthName)) +
+  geom_hline(data = filter(wq_std, CharacteristicID == "TEMP_WATER"),
+             aes(yintercept = StdValue, linetype = "WQ Standard"),
+             color = "gray50", linetype = 2) +
+  geom_point(size = 1) +
+  geom_smooth(aes(color = SampleDepthName), se = FALSE, size = 0.5) +
+  facet_grid(. ~ LocationID) +
+  scale_x_datetime(breaks = scales::pretty_breaks(n = 10)) +
+  labs(x = "Date", y = "Water Temperature (deg C)") +
+  scale_color_manual("Sample Depth", values = c("Bottom" = "orangered", "Surface" = "deepskyblue"))
+```
+
+
+## Specific Conductivity
+
+Specific conductivity is a common field measurement that represents the number of dissolved ions in the water, and is similar (though not identical) to salinity. Figure \ref{fig-spcond-ts} shows specific conductivity levels at each station and sample depth over time. The measurements at the bottom of the water column at the MWRA station are orders of magnitude higher than those at the surface of either station. This indicates salt water intrusion caused by leakage through the Amelia Earhart Dam located downstream of the confluence of the Mystic and Malden Rivers. Below the dam, the water level rises and falls with the tide, and as the tide rises, the saline water in the harbor can flow upstream through the dam and into the lower basin. This leakage can often result in a salt wedge because the more saline water has a higher density and thus remains at the bottom of the water column near the sediment surface. The salt wedge then reduces mixing of the water column, which prevents oxygen replenishment of deeper water from the atmosphere allowing sediment oxygen demand to consume most, if not all, available oxygen from the salt wedge itself. Therefore, the high conductivity levels in the bottom waters at `MWRA176` provide strong evidence of a salt wedge, which likely drives the extremely low DO levels also observed near the bottom of the water column at `MWRA176`.
+
+```{r fig-spcond-ts, fig.width = 10, fig.height = 4, fig.cap="Specific Conductivity Levels by Station and Sample Depth over Time \\label{fig-spcond-ts}"}
+wq_lt %>%
+  filter(CharacteristicID %in% c("SPCOND")) %>%
+  ggplot(aes(Datetime, ResultValue, color = SampleDepthName)) +
+  geom_point(size = 1) +
+  geom_smooth(aes(color = SampleDepthName), se = FALSE, size = 0.5) +
+  scale_y_continuous(labels = scales::comma) +
+  scale_x_datetime(breaks = scales::pretty_breaks(n = 10)) +
+  facet_grid(. ~ LocationID) +
+  labs(x = "Date", y = "Specific Conductivity (uS/cm)") +
+  scale_color_manual("Sample Depth", values = c("Bottom" = "orangered", "Surface" = "deepskyblue"))
+```
+
+Figure \ref{fig-spcond-ts-surface} shows the specific conductivity levels for the surface measurements only at both sites. The trends lines suggest increasing conductivity since 2005 at MAR036, and since 2010 at MWRA176. This trend could be caused by changes in the dam operation or abnormally low precipitation in recent years, which would result in less flushing of the channel by stormwater runoff and thus a greater build up of salty water intruding through the dam.
+
+```{r fig-spcond-ts-surface, fig.width = 10, fig.height = 4, fig.cap="Specific Conductivity Levels near the Water Surface by Station over Time \\label{fig-spcond-ts-surface}"}
+wq_lt %>%
+  filter(CharacteristicID %in% c("SPCOND"), SampleDepthName == "Surface") %>%
+  ggplot(aes(Datetime, ResultValue, color = SampleDepthName)) +
+  geom_point(size = 1) +
+  geom_smooth(aes(color = SampleDepthName), se = FALSE, size = 0.5) +
+  scale_y_continuous(labels = scales::comma, breaks = scales::pretty_breaks(n = 5)) +
+  facet_grid(. ~ LocationID) +
+  scale_x_datetime(breaks = scales::pretty_breaks(n = 10)) +
+  labs(x = "Date", y = "Specific Conductivity (uS/cm)") +
+  scale_color_manual("Sample Depth", values = c("Bottom" = "orangered", "Surface" = "deepskyblue"))
+```
+
+Figure \ref{fig-spcond-jday} shows the specific conductivity levels by day of the year to identify any seasonal patterns. At `MAR036`, conductivity decreases from winter to summer, then increases until the fall when it begins decreasing again. The `MWRA176` station shows a similar pattern with conductivity increasing during the summer and than rapidly decreasing towards the end of the year. These patterns are likely caused by reduced summer flows during the warmest months, which would result in less flushing of the channel and thus more saltwater build-up.
+
+```{r fig-spcond-jday, fig.width = 10, fig.height = 4, fig.cap="Specific Conductivity Levels near the Water Surface by Station over Day of the Year \\label{fig-spcond-jday}"}
+wq_lt %>%
+  mutate(Jday = yday(Datetime),
+         JdayDate = as.Date("2001-01-01") + days(Jday - 1)) %>%
+  filter(CharacteristicID %in% c("SPCOND"), SampleDepthName == "Surface") %>%
+  ggplot(aes(JdayDate, ResultValue, color = SampleDepthName)) +
+  geom_point(size = 1) +
+  geom_smooth(aes(color = SampleDepthName), se = FALSE, size = 0.5) +
+  facet_grid(. ~ LocationID) +
+  scale_y_continuous(labels = scales::comma, breaks = scales::pretty_breaks(n = 5)) +
+  scale_x_date(labels = scales::date_format("%b %d"),
+               breaks = scales::date_breaks("1 month")) +
+  labs(x = "Day of Year", y = "Specific Conductivity (uS/cm)") +
+  scale_color_manual("Sample Depth", values = c("Bottom" = "orangered", "Surface" = "deepskyblue")) +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+```
+
+## pH
+
+pH is another important water quality parameter in aquatic systems. As primary producers (e.g. algae and submerged plants) grow, they consume carbon dioxide and thus remove acidity from the water resulting in an increase in pH. As their biomass is decomposed in the fall, carbon dioxide is produced through respiration and decreases pH. Thus, pH can serve as indicator of eutrophication and excessive algae growth and decay. Extreme high or low pH levels can cause stress to many aquatic organisms, and can also greatly affect biological and chemical processes both in the water column and in the sediment (most notably the release of phosphorus from iron-bound complexes). As a result, pH is a major controlling factor in the rate of phosphorus release from sediments, which causes internal loading to many systems. The Massachusetts water quality standards include a minimum pH of 6.5 and a maximum of 8.3 for warm water fisheries.
+
+Figure \ref{fig-ph-ts} shows the pH levels near the surface and bottom at the `MWRA176` station over time. pH was only measured in the MyRWA baseline sampling until 2006 when it was discontinued, and thus it is not included here. This figure indicates that pH values near the surface exceeded the state standard maximum of 8.3 in almost every year except 2009. Near the bottom of the water column, pH levels are primarily within the range of the minimum and maximum standards, with only a few exceptions. The elevated pH near the surface likely reflects the effect of primary production on carbonate levels through the release of carbon dioxide.
+
+```{r fig-ph-ts, fig.width = 10, fig.height = 4, fig.cap="pH Levels at MWRA176 by Sample Depth over Time \\label{fig-ph-ts}"}
+wq_lt %>%
+  filter(CharacteristicID %in% c("PH"), ProjectID == "CSORWM") %>%
+  ggplot(aes(Datetime, ResultValue, color = SampleDepthName)) +
+  geom_hline(data = filter(wq_std, CharacteristicID == "PH"),
+             aes(yintercept = StdValue, linetype = "WQ Standard"),
+             color = "gray50", linetype = 2) +
+  geom_point(size = 1) +
+  geom_smooth(aes(color = SampleDepthName), se = FALSE, size = 0.5) +
+  facet_grid(. ~ LocationID) +
+  scale_x_datetime(breaks = scales::pretty_breaks(n = 20)) +
+  labs(x = "Date", y = "pH") +
+  scale_color_manual("Sample Depth", values = c("Bottom" = "orangered", "Surface" = "deepskyblue"))
+```
+
+Figure \ref{fig-ph-jday} shows the pH levels by day of the year at `MWRA176`. The smoothed trend line of the surface samples (blue line) shows an increase during the summer to a peak just below the maximum standard of 8.3 at the start of September. This peak may thus correspond to a time of peak primary production. The decline in pH during the fall may then reflect the decomposition of organic matter (decaying plant and alge matter), which releases CO2 and thus decreases pH. The pH measurements near the bottom of the water column do not show any strong seasonal trend, which further suggests the dynamics near the surface are caused by primary production, which is driven by the seasonality of light levels and temperature, among other factors.
+
+```{r fig-ph-jday, fig.width = 10, fig.height = 4, fig.cap="pH Levels at MWRA176 by Sample Depth and Day of the Year \\label{fig-ph-jday}"}
+wq_lt %>%
+  mutate(Jday = yday(Datetime),
+         JdayDate = as.Date("2001-01-01") + days(Jday - 1)) %>%
+  filter(CharacteristicID %in% c("PH"), ProjectID == "CSORWM") %>%
+  ggplot(aes(JdayDate, ResultValue, color = SampleDepthName)) +
+  geom_hline(data = filter(wq_std, CharacteristicID == "PH"),
+             aes(yintercept = StdValue, linetype = "WQ Standard"),
+             color = "gray50", linetype = 2) +
+  geom_point(size = 1) +
+  geom_smooth(aes(color = SampleDepthName), se = FALSE, size = 0.5) +
+  facet_grid(. ~ LocationID) +
+  scale_x_date(labels = scales::date_format("%b %d"),
+               breaks = scales::date_breaks("1 month")) +
+  labs(x = "Day of Year", y = "pH") +
+  scale_color_manual("Sample Depth", values = c("Bottom" = "orangered", "Surface" = "deepskyblue")) +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+```
+
+## Secchi Depth
+
+Secchi depth is a measurement of the transparency of the water column. It is the depth at which an observer at the water surface can no longer see a Secchi disk being lowered into the water column in broad daylight. Higher values indicate clearer water, and lower values indicate greater turbidity, algae abundance and other factors reducing transparency. Because of its simplicity, Secchi depth is a parameter commonly used as a proxy for algal biomass as well as the general aesthetics of lakes and reservoirs. It is thus used as an indicator of eutrophication with lower Secchi depth values indicating greater abundance of algae, and thus greater eutrophication.
+
+Figure \ref{fig-secchi-ts} shows the Secchi depth at `MWRA176` over time (MyRWA does not collect Secchi depth measurements). The long-term trend shows a peak around 2010 of 1.0 m, but has since declined steadily.
+
+```{r fig-secchi-ts, fig.width = 10, fig.height = 4, fig.cap="Secchi Depth at MWRA176 over Time \\label{fig-secchi-ts}"}
+wq_lt %>%
+  filter(CharacteristicID %in% c("SECCHI"), ProjectID == "CSORWM") %>%
   ggplot(aes(Datetime, ResultValue)) +
-  geom_point() +
-  facet_wrap( ~ LocationID, ncol = 1)
+  geom_point(size = 1) +
+  geom_smooth(se = FALSE, size = 0.5, color = "black") +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 10)) +
+  scale_x_datetime(breaks = scales::pretty_breaks(n = 20)) +
+  facet_grid(. ~ LocationID) +
+  labs(x = "Date", y = "Secchi Depth (m)")
 ```
 
-```{r}
+The seasonality of Secchi depths shown in Figure \ref{fig-secchi-jday} indicates low transparency in the early and late summer. In the middle of summer, the average Secchi depth increases to some degree, as well as in the fall. This pattern may reflect two distinct periods of algae growth, one in the early summer and another in late summer/early fall. It is also likely related to the amount of stormwater runoff which is relatively low in the middle of summer due to the warmer weather.
+
+```{r fig-secchi-jday, fig.width = 10, fig.height = 4, fig.cap="Secchi Depth at MWRA176 by Day of the Year \\label{fig-secchi-jday}"}
+wq_lt %>%
+  mutate(Jday = yday(Datetime),
+         JdayDate = as.Date("2001-01-01") + days(Jday - 1)) %>%
+  filter(CharacteristicID %in% c("SECCHI"), ProjectID == "CSORWM") %>%
+  ggplot(aes(JdayDate, ResultValue)) +
+  geom_point(size = 1) +
+  geom_smooth(color = "black", se = FALSE, size = 0.5) +
+  facet_grid(. ~ LocationID) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 10)) +
+  scale_x_date(labels = scales::date_format("%b %d"),
+               breaks = scales::pretty_breaks(n = 10)) +
+  labs(x = "Day of Year", y = "Secchi Depth (m)") +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+```
+
+
+## Total Phosphorus
+
+Total phosphorus (TP) is a key driver of eutrophication in most freshwater systems because it is often the primary nutrient limiting algae growth. Excess phosphorus loading can be caused by combined sewer overflows, urban runoff, and release from the sediments themselves. Although there is no numeric standard for phosphorus, the Massachusetts water quality standards include narrative criteria related to eutrophic conditions that can be caused by excessive phosphorus. Numeric criteria for target phosphorus levels are often determined on a site-by-site basis using empirical and/or simulation models. As one point of reference, the USEPA's 1986 Water Quality Criteria ("Gold Book") recommends a maximum TP concentration of 0.025 mg/L in lakes and reservoirs, and 0.050 mg/L in streams. Because the main channel of the Malden River is an impoundment, a target level of 0.025 mg/L is considered appropriate for the purpose of this analysis.
+
+Figure \ref{fig-tp-ts} shows TP concentrations at `MAR036` over time. The horizontal line shows the 0.025 mg/L target concentration. MWRA does not collect TP measurements on the Malden River, and thus no data are available for `MWRA176`. This figure shows a significant decrease in TP concentrations from 2000 through 2005. Since then, however, concentrations have remained relatively steady, and all samples over the entire period exceed the target level of 0.025 mg/L. 
+
+```{r fig-tp-ts, fig.width = 10, fig.height = 4, fig.cap="Total Phosphorus at MAR036 over Time \\label{fig-tp-ts}"}
+wq_lt %>%
+  filter(CharacteristicID %in% c("TP")) %>%
+  ggplot(aes(Datetime, ResultValue, color = SampleDepthName)) +
+  geom_hline(data = filter(wq_std, CharacteristicID == "TP"),
+             aes(yintercept = StdValue, linetype = "WQ Standard"),
+             color = "gray50", linetype = 2) +
+  geom_point(size = 1) +
+  geom_smooth(aes(color = SampleDepthName), se = FALSE, size = 0.5) +
+  scale_x_datetime(breaks = scales::pretty_breaks(n = 20)) +
+  facet_grid(. ~ LocationID) +
+  labs(x = "Date", y = "TP (mg/L)") +
+  ylim(0, NA) +
+  scale_color_manual("Sample Depth", values = c("Bottom" = "orangered", "Surface" = "deepskyblue"))
+```
+
+Figure \ref{fig-tp-ts-annual} shows the annual mean and 95% confidence interval of TP concentrations at `MAR036`. Since 2003, annual mean TP concentrations have ranged between 0.050 and 0.075 mg/L, more than twice the target of 0.025 mg/L.
+
+```{r fig-tp-ts-annual, fig.width = 10, fig.height = 4, fig.cap="Annual Mean and 95% Confidence Interval of Total Phosphorus at MAR036 \\label{fig-tp-ts-annual}"}
+wq_lt %>%
+  filter(CharacteristicID %in% c("TP")) %>%
+  mutate(Year = year(Datetime)) %>%
+  ggplot(aes(Year, ResultValue, color = SampleDepthName)) +
+  geom_hline(data = filter(wq_std, CharacteristicID == "TP"),
+             aes(yintercept = StdValue, linetype = "WQ Standard"),
+             color = "gray50", linetype = 2) +
+  stat_summary(fun.data = "mean_cl_boot") +
+  stat_summary(fun.data = "mean_cl_boot", geom = "line") +
+  facet_grid(. ~ LocationID) +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 20)) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 20), limits = c(0, NA)) +
+  labs(x = "Date", y = "Annual Mean +/- 95% CI TP (mg/L)") +
+  scale_color_manual("Sample Depth", values = c("Bottom" = "orangered", "Surface" = "deepskyblue"))
+```
+
+Figure \ref{fig-tp-jday} shows the seasonality of TP concentrations at `MAR036`. This figure indicates only a slight seasonal pattern with lower concentrations occuring during the winter, and a greater frequency of extreme high values during the summer. These higher concentrations could be caused by stormwater runoff events that contribute high loads to the receiving water body.
+
+```{r fig-tp-jday, fig.width = 10, fig.height = 4, fig.cap="Total Phosphorus at MAR036 by Day of the Year \\label{fig-tp-jday}"}
+wq_lt %>%
+  mutate(Jday = yday(Datetime),
+         JdayDate = as.Date("2001-01-01") + days(Jday - 1)) %>%
+  filter(CharacteristicID %in% c("TP")) %>%
+  ggplot(aes(JdayDate, ResultValue, color = SampleDepthName)) +
+  geom_hline(data = filter(wq_std, CharacteristicID == "TP"),
+             aes(yintercept = StdValue, linetype = "WQ Standard"),
+             color = "gray50", linetype = 2) +
+  geom_point(size = 1) +
+  geom_smooth(aes(color = SampleDepthName), se = FALSE, size = 0.5) +
+  facet_grid(. ~ LocationID) +
+  scale_x_date(labels = scales::date_format("%b %d"),
+               breaks = scales::date_breaks("1 month")) +
+  labs(x = "Day of Year", y = "TP (mg/L)") +
+  scale_color_manual("Sample Depth", values = c("Bottom" = "orangered", "Surface" = "deepskyblue")) +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+```
+
+## E. coli
+
+E. coli is used as an indicator bacteria species for determining the public health risk of freshwater systems. Elevated E. coli levels indicate possible sewage discharge (include combined sewer overflows), excess animal waste (especially dogs and birds) associated with urban runoff, and other potential pollution sources. The Massachusetts standard defines a single sample maximum of 235 CFU/100mL, and a geometric mean of 126 CFU/100mL for contact recreation. 
+
+Figure \ref{fig-ecoli-ts} shows E. coli levels near the surface at `MAR036` and `MWRA176` over time (no bottom samples are collected for E. coli at `MWRA176`). At both sites, E. coli levels frequently exceed the single sample maximum of 235, with `MAR036` having overall greater levels than `MWRA176`. Both sites also show a rise in concentrations from 2005 to 2012, followed by a decline to 2015.
+
+```{r fig-ecoli-ts, fig.width = 10, fig.height = 4, fig.cap="E. coli Concentrations by Station over Time \\label{fig-ecoli-ts}"}
+wq_lt %>%
+  filter(CharacteristicID %in% c("ECOLI")) %>%
+  ggplot(aes(Datetime, ResultValue, color = SampleDepthName)) +
+  geom_hline(data = filter(wq_std, CharacteristicID == "ECOLI"),
+             aes(yintercept = StdValue, linetype = "WQ Standard"),
+             color = "gray50", linetype = 2) +
+  geom_point(size = 1) +
+  geom_smooth(aes(color = SampleDepthName), se = FALSE, size = 0.5) +
+  facet_grid(. ~ LocationID) +
+  scale_x_datetime(breaks = scales::pretty_breaks(n = 10)) +
+  scale_y_log10(breaks = scales::log_breaks(n = 10), labels = scales::comma) +
+  labs(x = "Date", y = "E. coli (CFU or MPN/100mL)") +
+  scale_color_manual("Sample Depth", values = c("Bottom" = "orangered", "Surface" = "deepskyblue"))
+```
+
+Figure \ref{fig-ecoli-exceed} shows the percent of samples collected in each year that exceed the single sample maximum of 235 CFU/100mL. The frequency of exceedence is higher overall at `MAR036` as was seen in the previous figure. In 2010 and 2011, more than 90% of the MyRWA Baseline samples at `MAR036` were in exceedence indicating a significant bacteria impairment.
+
+```{r fig-ecoli-exceed, fig.width = 10, fig.height = 4, fig.cap="Percent of Samples Exceeding the Single Sample Maximum for E. coli by Year and Station \\label{fig-ecoli-exceed}"}
+wq_lt %>%
+  filter(CharacteristicID %in% c("ECOLI")) %>%
+  left_join(select(wq_std, CharacteristicID, StdValue)) %>%
+  mutate(Year = year(Datetime)) %>%
+  group_by(LocationID, SampleDepthName, Year) %>%
+  summarise(N = sum(!is.na(ResultValue)),
+            N_Exceed = sum(ResultValue > StdValue, na.rm=TRUE),
+            FracExceed = N_Exceed/N) %>%
+  ungroup %>%
+  ggplot(aes(factor(Year), FracExceed, fill = SampleDepthName)) +
+  geom_bar(stat = "identity") +
+  facet_grid(. ~ LocationID) +
+  labs(x = "Year", y = "% of Samples > 235 per 100mL") +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 10), labels = scales::percent, limits = c(0, 1)) +
+  scale_fill_manual("Sample Depth", values = c("Bottom" = "orangered", "Surface" = "deepskyblue")) +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5))
+```
+
+Figure \ref{fig-ecoli-jday} shows the seasonality of E. coli at each site. Both sites show some increase in the fall season, however `MAR036` shows no significant patterns in other parts of the year. `MWRA176` shows lowest levels tend to occur around the beginning of August, which could be caused by the drier weather and less runoff contributing bacteria loads.
+
+```{r fig-ecoli-jday, fig.width = 10, fig.height = 4, fig.cap="E. coli Concentrations by Station over Day of the Year \\label{fig-ecoli-jday}"}
+wq_lt %>%
+  mutate(Jday = yday(Datetime),
+         JdayDate = as.Date("2001-01-01") + days(Jday - 1)) %>%
+  filter(CharacteristicID %in% c("ECOLI")) %>%
+  ggplot(aes(JdayDate, ResultValue, color = SampleDepthName)) +
+  geom_hline(data = filter(wq_std, CharacteristicID == "ECOLI"),
+             aes(yintercept = StdValue, linetype = "WQ Standard"),
+             color = "gray50", linetype = 2) +
+  geom_point(size = 1) +
+  geom_smooth(aes(color = SampleDepthName), se = FALSE, size = 0.5) +
+  scale_y_log10(breaks = scales::log_breaks(n = 10), labels = scales::comma) +
+  facet_grid(. ~ LocationID) +
+  scale_x_date(labels = scales::date_format("%b %d"),
+               breaks = scales::date_breaks("1 month")) +
+  labs(x = "Day of Year", y = "E. coli (CFU or MPN/100mL)") +
+  scale_color_manual("Sample Depth", values = c("Bottom" = "orangered", "Surface" = "deepskyblue")) +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+```
+
+# TMDL Sampling Program (2015)
+
+This section focuses on data collected by MyRWA through its new TMDL Sampling Program, which began in 2015. The goals of this program are to collect data for 1) estimating phosphorus loads and 2) evaluating the response of receiving water bodies to those loads.
+
+Figure \ref{fig-tmdl} shows all water quality data collected at both stations in 2015. Chlorophyll a was only measured at `MAR003`, while phosphate was only measured at `MAR036` and never exceeded the detection limit of 0.005 mg/L. This figure shows that DO levels were generally lower at `MAR036`, which is located at the top of the channel. Therefore DO appears to be increasing from there to `MAR003` at the confluence of the Malden and Mystic Rivers. Conductivity was much greater in the early fall at `MAR003`, which is closer to the dam. Turbidity levels are fairly similar as are TP levels, although TP shows some differences in the early summary and in October with higher levels at `MAR036`.
+
+The chlorophyll a levels at `MAR003` show two peaks, one in May and another in September indicating two blooms with concentrations of 55.9 and 47.5 ug/L, respectively. Secondary blooms can occur for a variety of reasons including a sudden increase in biologically-available dissolved phosphorus from decomposing algae matter generatred during the first bloom, as well as turnover of the water column as temperatures become cooler, which can bring nutrient-rich water from the bottom to the surface. 
+
+```{r fig-tmdl, fig.width = 10, fig.height = 8, fig.cap = "Water Quality Data Collected for MyRWA TMDL Sampling Program in 2015 \\label{fig-tmdl}"}
 wq %>%
-  filter(CharacteristicID %in% c("TP"),
-         ProjectID == "BASE") %>%
-  ggplot(aes(Datetime, ResultValue)) +
-  geom_point() +
-  facet_wrap( ~ LocationID, ncol = 1) +
-  scale_y_log10()
+  filter(ProjectID == "TMDL") %>%
+  ggplot(aes(Datetime, ResultValue, color = LocationID)) +
+  geom_point(size = 2) +
+  geom_line() +
+  facet_wrap( ~ CharacteristicUnits, scales = "free_y", switch = "y", ncol = 2) +
+  labs(x = "Date", y = "") +
+  scale_x_datetime(labels = scales::date_format("%b %d %Y"),
+                   breaks = scales::date_breaks("1 month")) +
+  ylim(0, NA) +
+  scale_color_manual("LocationID", values = c("MAR003" = "steelblue", "MAR036" = "chartreuse3")) +
+  theme(axis.text.x = element_text(angle = 30, hjust =1 ))
+```
+
+```{r tmdl-means}
+tmdl_means <- wq %>%
+  filter(ProjectID == "TMDL", CharacteristicID %in% c("TP", "CHLA")) %>%
+  group_by(LocationID, CharacteristicID) %>%
+  summarise(Mean = mean(ResultValue, na.rm = TRUE),
+            Max = max(ResultValue, na.rm = TRUE))
+secchi_means <- wq %>%
+  filter(ProjectID == "CSORWM", CharacteristicID == "SECCHI", year(Datetime) == 2015) %>%
+  summarise(Mean = mean(ResultValue, na.rm=TRUE))
 ```
 
 
+Together, measurements of chlorophyll a, total phosphorus and Secchi depth can be used to categorize the degree of eutrophication in freshwater systems. The mean chlorophyll a concentration at `MAR003` was `r format(tmdl_means[which(tmdl_means$LocationID == "MAR003" & tmdl_means$CharacteristicID=="CHLA"), "Mean"], digits=3)` ug/L with a maximum of `r format(tmdl_means[which(tmdl_means$LocationID == "MAR003" & tmdl_means$CharacteristicID=="CHLA"), "Max"], digits=3)` ug/L. Overall mean concentrations of TP were `r format(tmdl_means[which(tmdl_means$LocationID == "MAR003" && tmdl_means$CharacteristicID=="TP"), "Mean"], digits=3)` and `r format(tmdl_means[which(tmdl_means$LocationID == "MAR036" & tmdl_means$CharacteristicID=="TP"), "Mean"], digits=2)` mg/L at `MAR003` and `MAR036`, respectively. The mean Secchi depth measured by MWRA at `MWRA176` was `r format(secchi_means$Mean, digits=2)` m in 2015. Based on this evidence, the main channel of the Malden River was eutrophic in 2015 according to the following categories defined in Carlson and Simpson (1996):
 
-```{r}
+
+Chl-a	(ug/L) | TP (mg/L)         | Secchi Depth (m) | Trophic Class
+-------------|-------------------|------------------|-----------------
+0 - 2.6      | 0 - 0.012         | >8 - 4           | Oligotrophic
+2.6 - 20     | 0.012 - 0.024     | 4 - 2            | Mesotrophic
+20 - 56	     | 0.024 - 0.096     | 2 - 0.5          | Eutrophic
+56 - 155+	   | 0.096 - 0.384+    | 0.5 - <0.25      | Hypereutrophic
+**22.9**	   | **0.032 - 0.036** | **0.92**         | **Malden River**
+
+
+Lastly, Figure \ref{fig-tp-ts-2015} shows the TP concentrations measured at each MyRWA monitoring station in 2015 for both the Baseline and TMDL Sampling Programs. While both stations are included in the TMDL Program, only `MAR036` is included in the Baseline Program. This figure reveals a major discrepancy between the two sampling programs at `MAR036`: TP concentrations are generally higher for the Baseline program relative to the TMDL program. This discrepency is being actively investigated, and the result of differences between the analytical methods used by the two separate labs for the each program. However, data from the TMDL program, shows that the majority of samples are still above the target TP concentration of 0.025 mg/L.
+
+```{r fig-tp-ts-2015, fig.width = 10, fig.height = 4, fig.cap = "Total Phosphorus Measurements in 2015 Comparing MyRWA's Baseline and TMDL Sampling Programs \\label{fig-tp-ts-2015}"}
 wq %>%
-  filter(CharacteristicID %in% c("TP", "CHLA")) %>%
-  filter(year(Datetime) == 2015) %>%
-  ggplot(aes(Datetime, ResultValue)) +
-  geom_point() +
-  facet_grid(CharacteristicID ~ LocationID, scales = "free_y")
+  filter(CharacteristicID %in% c("TP"), year(Datetime) == 2015) %>%
+  ggplot(aes(Datetime, ResultValue, color = ProjectName)) +
+  geom_hline(data = filter(wq_std, CharacteristicID == "TP"),
+             aes(yintercept = StdValue, linetype = "WQ Standard"),
+             color = "gray50", linetype = 2) +
+  geom_point(size = 2) +
+  facet_grid(. ~ LocationID) +
+  scale_x_datetime(labels = scales::date_format("%b %d %Y"),
+                   breaks = scales::date_breaks("1 month")) +
+  labs(x = "Date", y = "TP (mg/L)") +
+  ylim(0, NA) +
+  scale_color_manual("Project", values = c("Baseline" = "steelblue", "TMDL" = "chartreuse3")) +
+  theme(axis.text.x = element_text(angle = 30, hjust =1 ))
 ```
 
 
-```{r}
-wq %>%
-  filter(CharacteristicID %in% c("TP"),
-         ProjectID == "BASE",
-         ResultValue > 0.01) %>%
-  mutate(DecimalDate = decimal_date(as.Date(Datetime)),
-         DecimalDate2000 = DecimalDate - 2000) %>%
-  lm(ResultValue ~ DecimalDate2000, data = .) %>%
-  summary
-```
+# Summary
 
+The previous sections provide a detailed look at the patterns and dynamics identified using the routine sampling data collected by MyRWA and MWRA. This section provides a "big picture" summary of these observations.
 
-```{r}
-wq %>%
-  filter(CharacteristicID %in% c("TP"),
-         ProjectID == "BASE",
-         ResultValue > 0.01) %>%
-  mutate(Jday = yday(Datetime)) %>%
-  ggplot(aes(Jday, ResultValue)) +
-  geom_point()
-```
+## Salt Wedge and DO Impairments
 
+Specific conductivity levels measured near both the surface and bottom of the water column at the MWRA station `MWRA176` provide strong evidence of a salt wedge caused by intrusion through the Amelia Earhart Dam. The saltier water entering the lower basin of the Mystic and Malden Rivers from Boston Harbor has a greater density than the freshwater coming from upstream in the watershed. Because of this density difference, the salt water remains near the bottom of the water column and prevents vertical mixing. Without vertical mixing, the oxygen-depleted waters near the sediment are not replenished with oxygen-rich water from the surface. Therefore, the intrusion of salt water through the dam and formation of a salt wedge along the bottom of the Malden River is likely a major factor driving the significant DO impairments observed at `MWRA176`.
+
+## Bacteria Impairments
+
+Indicator bacteria measurements for E. coli collected by both MyRWA and MWRA reveal a constant and significant impairment, which poses a significant risk for public health. E. coli samples at both `MAR036` and `MWRA176` frequently exceed the state standard for a single sample maximum of 235 CFU/100mL in each year of sampling. Data from `MAR036`, which is located at the top of the main channel, suggest a possible decreasing trend since 2012. However, the significance of this trend has not been thoroughly investigated. This impairment is likely driven by urban runoff as well as combined sewer overflows that can have high levels of bacteria from various sources.
+
+## Eutrophication
+
+The total phosphorus, chlorophyll a, and Secchi depth measurements collected by MyRWA and MWRA all indicate that the Malden River is in a eutrophic state. In 2015, the overall mean total phosphorus and chlorophyll a at `MAR003` were `r format(tmdl_means[which(tmdl_means$LocationID == "MAR003" && tmdl_means$CharacteristicID=="TP"), "Mean"], digits=3)` mg/L and `r format(tmdl_means[which(tmdl_means$LocationID == "MAR003" & tmdl_means$CharacteristicID=="CHLA"), "Max"], digits=3)` ug/L, respectively, and the mean Secchi depth was `r format(secchi_means$Mean, digits=2)` m at `MWRA176`. These values all fall within the eutrophic range defined by Carlson and Simpson (1996). The chlorophyll a data also show that two blooms occurred in 2015, one in the early summer and one in early fall with peak concentrations of 55.9 and 47.5 ug/L, respectively. 
+
+Furthermore, long-term total phosphorus levels measured by MyRWA at both `MAR036` and `MAR003` generally exceed the recommended target of 0.025 mg/L based on the USEPA's 1986 Water Quality Criteria (Gold Book) for lakes and reservoirs since 2000. Although samples collected as part of the TMDL program have lower concentrations than those from the Baseline Monitoring Program due to a differences in lab analysis, these data also show elevated phosphorus levels, which are likely contributing to high algal biomass. 
+
+The effects of this eutrophication are reflected in the super-saturation of dissolved oxygen near the water surface, as well as anoxic conditions near the bottom of the water column. This algae growth may also be contributing to the high pH levels observed at `MWRA176` that exceed the state water quality standard.
+
+# Conclusion
+
+The Malden River has one of the most highly urbanized watersheds in Massachusetts with a long history of industrial activities and environmental degradation. Routine water quality monitoring data collected by MyRWA and MWRA since 2000 show numerous impairments based on state standards (e.g. DO, pH, E. coli), and excessive nutrient (phosphorus) levels contributing to eutrophication. These datasets do not show any significant improvements over recent years, although some parameters show possible trends towards better water quality. 
+
+The impoundment of the Malden River's main channel by the Amelia Earhart Dam is likely exacerbating these problems by reducing flushing of the channel, and causing the formation of a salt wedge that reduces mixing of the water column. Improved stormwater management and infrastructure to reduce urban runoff and pollutant loading is needed, as well as further investigations into the sources of pollutants. The history of industrial and heavily urbanized usage of this watershed suggests that legacy pollution stored in the sediments may also be playing a significant role in these impairments. The sediments likely have not only high oxygen demand, but also high phosphorus release rates as well as high concentrations of heavy metals. Further work is needed to identify the causes of water quality degradation in the Malden River and to development management plans and solutions for addressing these problems.
+
+# References
+
+Carlson R.E. and J. Simpson (1996). A Coordinator's Guide to Volunteer Lake Monitoring Methods. North American Lake Management Society. 96 pp.
+
+US EPA (1986). Gold Book: Criteria Quality for Water 1986. EPA/440-5-86-001. 

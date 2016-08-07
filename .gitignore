@@ -5,6 +5,12 @@
 packrat/lib*/
 packrat/src/
 *.rda
-rmd/*.R
+
 rmd/*.html
+rmd/**/*.pdf
+rmd/*.tex
+!rmd/header.tex
+
+
+
 data/gis/*.*

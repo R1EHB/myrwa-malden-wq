@@ -11,6 +11,3 @@ rmd/**/*.pdf
 rmd/*.tex
 !rmd/header.tex
 
-
-
-data/gis/*.*

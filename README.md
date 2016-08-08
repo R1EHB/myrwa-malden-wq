@@ -9,7 +9,7 @@ Malden River: Exploratory Water Quality Data Analysis
 
 **Jeffrey D Walker, PhD**   
 **[Walker Environmental Research, LLC](http://walkerenvres.com)**  
-@walkerjeffd
+[@walkerjeffd](https://github.com/walkerjeffd)
 
 August 5, 2016
 
@@ -31,7 +31,7 @@ This report was written using [RStudio](https://www.rstudio.com/) with the [rmar
 
 ## Generate the Report
 
-To reproduce this report, start with the `main.R` script and run each line that is uncommented. These will rune the `load-*` scripts, which read in the data from the data/db folder, and save the results to `data/rdata`.
+To reproduce this report, start with the `main.R` script and run each line that is uncommented. These scripts will run the `load-*` scripts, which read in the data from the `data/db` and `data/gis` folders, and save the results as binary R files in `data/rdata`.
 
 If you get an error about some packages not being installed, then check the `packages.R` script, and install any packages listed in `packages` that are missing. 
 

@@ -1,10 +1,13 @@
-library(yaml)
-library(myrwaR)
-library(dplyr)
-library(tidyr)
-library(lubridate)
-library(readr)
-library(ggplot2)
+
+# THESE PACKAGES ARE REQUIRED
+packages <- c("yaml", "dplyr", "tidyr", "lubridate",
+              "readr", "ggplot2", "rmarkdown", "knitr")
+
+loaded <- all(sapply(packages, require, character.only = TRUE))
+
+if (!loaded) {
+  stop("ERROR: Missing some packages, try running 'install.packages(packages)`")
+}
 
 theme_set(theme_bw())
 theme_update(strip.background = element_blank(),
